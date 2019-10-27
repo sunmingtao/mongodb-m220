@@ -1,16 +1,11 @@
 package mflix.api.daos;
 
-import com.mongodb.MongoClientSettings;
-import com.mongodb.MongoWriteException;
-import com.mongodb.WriteConcern;
-import com.mongodb.client.MongoClient;
-import com.mongodb.client.MongoCollection;
-import com.mongodb.client.model.UpdateOptions;
-import com.mongodb.client.model.Updates;
-import com.mongodb.client.result.DeleteResult;
-import com.mongodb.client.result.UpdateResult;
-import mflix.api.models.Session;
-import mflix.api.models.User;
+import static com.mongodb.client.model.Updates.set;
+import static org.bson.codecs.configuration.CodecRegistries.fromProviders;
+import static org.bson.codecs.configuration.CodecRegistries.fromRegistries;
+
+import java.util.Map;
+
 import org.bson.Document;
 import org.bson.codecs.configuration.CodecRegistry;
 import org.bson.codecs.pojo.PojoCodecProvider;
@@ -21,11 +16,15 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 
-import java.text.MessageFormat;
-import java.util.Map;
+import com.mongodb.MongoClientSettings;
+import com.mongodb.WriteConcern;
+import com.mongodb.client.MongoClient;
+import com.mongodb.client.MongoCollection;
+import com.mongodb.client.model.UpdateOptions;
+import com.mongodb.client.model.Updates;
 
-import static org.bson.codecs.configuration.CodecRegistries.fromProviders;
-import static org.bson.codecs.configuration.CodecRegistries.fromRegistries;
+import mflix.api.models.Session;
+import mflix.api.models.User;
 
 @Configuration
 public class UserDao extends AbstractMFlixDao {
@@ -56,12 +55,15 @@ public class UserDao extends AbstractMFlixDao {
    * @return True if successful, throw IncorrectDaoOperation otherwise
    */
   public boolean addUser(User user) {
-    //TODO > Ticket: Durable Writes -  you might want to use a more durable write concern here!
-    usersCollection.insertOne(user);
-    return true;
-    //TODO > Ticket: Handling Errors - make sure to only add new users
-    // and not users that already exist.
-
+    try {
+        if (getUser((user.getEmail())) == null ){
+            usersCollection.withWriteConcern(WriteConcern.MAJORITY).insertOne(user);
+            return true;
+        }
+    }catch(Exception e) {
+        throw new IncorrectDaoOperation("");
+    }
+    return false;
   }
 
   /**
@@ -72,13 +74,11 @@ public class UserDao extends AbstractMFlixDao {
    * @return true if successful
    */
   public boolean createUserSession(String userId, String jwt) {
-      Session session = new Session();
-      session.setUserId(userId);
-      session.setJwt(jwt);
-      sessionsCollection.insertOne(session);
+      Bson updateFilter = new Document("user_id", userId);
+      Bson setUpdate = Updates.set("jwt", jwt);
+      UpdateOptions options = new UpdateOptions().upsert(true);
+      sessionsCollection.updateOne(updateFilter, setUpdate, options);
       return true;
-    //TODO > Ticket: Handling Errors - implement a safeguard against
-    // creating a session with the same jwt token.
   }
 
   /**
@@ -130,6 +130,9 @@ public class UserDao extends AbstractMFlixDao {
     // be updated.
     //TODO > Ticket: Handling Errors - make this method more robust by
     // handling potential exceptions when updating an entry.
-    return false;
+      if (userPreferences == null) {
+          throw new IncorrectDaoOperation("User preferences cannot be null");
+      }
+    return usersCollection.updateOne(new Document("email", email), set("preferences", userPreferences)).wasAcknowledged();
   }
 }

@@ -1,18 +1,13 @@
 package mflix.api.daos;
 
-import com.mongodb.MongoClientSettings;
-import com.mongodb.MongoWriteException;
-import com.mongodb.ReadConcern;
-import com.mongodb.client.MongoClient;
-import com.mongodb.client.MongoCollection;
-import com.mongodb.client.model.Aggregates;
-import com.mongodb.client.model.Filters;
-import com.mongodb.client.model.Sorts;
-import com.mongodb.client.model.Updates;
-import com.mongodb.client.result.DeleteResult;
-import com.mongodb.client.result.UpdateResult;
-import mflix.api.models.Comment;
-import mflix.api.models.Critic;
+import static org.bson.codecs.configuration.CodecRegistries.fromProviders;
+import static org.bson.codecs.configuration.CodecRegistries.fromRegistries;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.List;
+
 import org.bson.Document;
 import org.bson.codecs.configuration.CodecRegistry;
 import org.bson.codecs.pojo.PojoCodecProvider;
@@ -24,13 +19,18 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.text.MessageFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
+import com.mongodb.MongoClientSettings;
+import com.mongodb.ReadConcern;
+import com.mongodb.client.MongoClient;
+import com.mongodb.client.MongoCollection;
+import com.mongodb.client.model.Filters;
 
-import static org.bson.codecs.configuration.CodecRegistries.fromProviders;
-import static org.bson.codecs.configuration.CodecRegistries.fromRegistries;
+import mflix.api.models.Comment;
+import mflix.api.models.Critic;
+
+import static com.mongodb.client.model.Aggregates.*;
+import static com.mongodb.client.model.Accumulators.*;
+import static com.mongodb.client.model.Sorts.*;
 
 @Component
 public class CommentDao extends AbstractMFlixDao {
@@ -79,12 +79,15 @@ public class CommentDao extends AbstractMFlixDao {
    * returns the resulting Comment object.
    */
   public Comment addComment(Comment comment) {
-
-    // TODO> Ticket - Update User reviews: implement the functionality that enables adding a new
-    // comment.
-    // TODO> Ticket - Handling Errors: Implement a try catch block to
-    // handle a potential write exception when given a wrong commentId.
-    return null;
+      if (comment.getId() == null) {
+          throw new IncorrectDaoOperation("Id is null");
+      }
+      try {
+          commentCollection.insertOne(comment);
+      }catch(Exception e) {
+          throw new IncorrectDaoOperation("Id is incorrect", e);
+      }
+      return comment;
   }
 
   /**
@@ -102,11 +105,17 @@ public class CommentDao extends AbstractMFlixDao {
    */
   public boolean updateComment(String commentId, String text, String email) {
 
-    // TODO> Ticket - Update User reviews: implement the functionality that enables updating an
-    // user own comments
-    // TODO> Ticket - Handling Errors: Implement a try catch block to
-    // handle a potential write exception when given a wrong commentId.
-    return false;
+      Comment comment = getComment(commentId);
+      if (comment == null) {
+          throw new IncorrectDaoOperation("Comment");
+      }
+      if (!email.equalsIgnoreCase(comment.getEmail())) {
+          return false;
+      }else {
+          Document doc1 = new Document("text", text);
+          doc1.put("date", new Date());
+          return commentCollection.updateOne(new Document("_id", new ObjectId(commentId)), new Document("$set", doc1)).getModifiedCount() == 1L;
+      }
   }
 
   /**
@@ -117,12 +126,10 @@ public class CommentDao extends AbstractMFlixDao {
    * @return true if successful deletes the comment.
    */
   public boolean deleteComment(String commentId, String email) {
-    // TODO> Ticket Delete Comments - Implement the method that enables the deletion of a user
-    // comment
-    // TIP: make sure to match only users that own the given commentId
-    // TODO> Ticket Handling Errors - Implement a try catch block to
-    // handle a potential write exception when given a wrong commentId.
-    return false;
+      Bson filter = Filters.and(
+              Filters.eq("email", email),
+              Filters.eq("_id", new ObjectId(commentId)));
+      return commentCollection.deleteOne(filter).getDeletedCount() == 1;
   }
 
   /**
@@ -140,6 +147,28 @@ public class CommentDao extends AbstractMFlixDao {
     // // guarantee for the returned documents. Once a commenter is in the
     // // top 20 of users, they become a Critic, so mostActive is composed of
     // // Critic objects.
+    /**
+     * In this method we can use the $sortByCount stage:
+     * https://docs.mongodb.com/manual/reference/operator/aggregation/sortByCount/index.html
+     * using the $email field expression.
+     */
+    Bson groupByCountStage = sortByCount("$email");
+    // Let's sort descending on the `count` of comments
+    Bson sortStage = sort(descending("count"));
+    // Given that we are required the 20 top users we have to also $limit
+    // the resulting list
+    Bson limitStage = limit(20);
+    // Add the stages to a pipeline
+    List<Bson> pipeline = new ArrayList<>();
+    pipeline.add(groupByCountStage);
+    pipeline.add(sortStage);
+    pipeline.add(limitStage);
+    MongoCollection<Critic> commentCriticCollection =
+            this.db.getCollection("comments", Critic.class)
+                    .withCodecRegistry(this.pojoCodecRegistry)
+                    .withReadConcern(ReadConcern.MAJORITY);
+    commentCriticCollection.aggregate(pipeline).into(mostActive);
+    //commentCollection.aggregate(Arrays.asList(group("$email", sum("count", 1L)), sort(descending("count")), limit(20)), Critic.class).into(mostActive);
     return mostActive;
   }
 }
